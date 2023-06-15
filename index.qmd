@@ -1,0 +1,203 @@
+---
+title: "Riqueza de especies de félidos en cantones"
+format: html
+---
+
+# Carga de paquetes
+```{r}
+#| label: carga-paquetes
+#| warning: false
+#| message: false
+#| code-fold: show
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+```
+
+# Carga de datos
+
+## Cantones
+```{r}
+#| label: carga-cantones
+#| warning: false
+#| message: false
+#| code-fold: show
+
+cantones <- 
+  st_read(
+    "cantones_2020_simp_10m.geojson",
+    quiet = TRUE
+  ) |>
+  st_transform(4326)
+```
+
+## Registros de presencia de félidos
+```{r}
+#| label: carga-felidos
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Carga de datos de félidos de Costa Rica
+felidos <-
+  st_read(
+    "felidos.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", # columna de longitud decimal
+      "Y_POSSIBLE_NAMES=decimalLatitude"   # columna de latitud decimal
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84
+st_crs(felidos) <- 4326
+```
+
+# Unión (*join*) espacial de cantones (polígonos) con registros de presencia de félidos (puntos)
+
+1. Unión espacial de félidos y cantones
+```{r}
+#| label: union-felidos-cantones
+#| warning: false
+#| message: false
+#| code-fold: show
+
+felidos_union_cantones <-
+  st_join(
+    x = felidos,
+    y = dplyr::select(cantones, cod_canton),
+    join = st_within
+  )
+```
+
+2. Conteo de la cantidad de especies de félidos en cada cantón
+```{r}
+#| label: conteo-felidos-cantones
+#| warning: false
+#| message: false
+#| code-fold: show
+
+riqueza_especies_felidos_cantones <-
+  felidos_union_cantones |>
+  st_drop_geometry() |>
+  group_by(cod_canton) |>
+  summarize(riqueza_especies_felidos = n_distinct(species, na.rm = TRUE))
+```
+
+3. Unión no espacial de cantones con dataframe de riqueza de especies en cantones
+```{r}
+#| label: union-cantones-riqueza
+#| warning: false
+#| message: false
+#| code-fold: show
+
+cantones_union_riqueza <-
+  left_join(
+    x = cantones,
+    y = riqueza_especies_felidos_cantones,
+    by = "cod_canton"
+  ) |>
+  replace_na(list(riqueza_especies_felidos = 0))
+```
+
+4. Mapa
+```{r}
+#| label: mapa-riqueza
+#| warning: false
+#| message: false
+#| code-fold: show
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = cantones_union_riqueza$riqueza_especies_felidos,
+    na.color = "transparent"
+  )
+
+# Paleta de colores de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(felidos$species))), 
+  domain = felidos$species
+)
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = cantones_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(cantones_union_riqueza$riqueza_especies_felidos),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Cantón:</strong>", cantones_union_riqueza$canton),
+      paste("<strong>Riqueza de especies:</strong>", cantones_union_riqueza$riqueza_especies_felidos),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = cantones_union_riqueza$riqueza_especies_felidos,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |>
+  addCircleMarkers(
+    data = felidos,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_especies(felidos$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", felidos$species),
+      paste0("<strong>Localidad: </strong>", felidos$locality),
+      paste0("<strong>Fecha: </strong>", felidos$eventDate),
+      paste0("<strong>Fuente: </strong>", felidos$institutionCode),
+      paste0("<a href='", felidos$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Registros de presencia"
+  ) |>  
+  addLegend(
+    position = "bottomright",    
+    pal = colores_especies,
+    values = felidos$species,
+    title = "Especies",
+    group = "Registros de presencia"    
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies",
+      "Registros de presencia"
+    )
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia") 
+```
+
